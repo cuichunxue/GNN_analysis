@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="{{ csrf_token }}">
+<title>Fault Management Analyzer</title>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/10.1.0/standalone/umd/vis-network.min.js"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<nav class="navbar navbar-dark app-navbar">
+  <div class="container-fluid px-4">
+    <span class="navbar-brand mb-0 h1"><i class="fa-solid fa-diagram-project me-2"></i>Fault Management Analyzer</span>
+    <span class="text-white-50 small d-none d-md-inline">属性グラフ埋め込みで原因予測・未知パターン発見・類似Fault検索</span>
+  </div>
+</nav>
+
+<div id="cdnWarning" class="d-none"></div>
+
+<div class="container py-4">
+
+  <!-- STEP 1: データ読込 -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-header card-header-step">
+      <span class="step-badge">STEP 1</span> データ読み込み
+    </div>
+    <div class="card-body">
+      <div class="row g-3 align-items-end">
+        <div class="col-md-6">
+          <label class="form-label small text-muted" for="csvFile">CSVファイルをアップロード（列例: 装置,部品,症状,Error,条件,工程,原因,対策,備考,発生日）</label>
+          <input class="form-control" type="file" id="csvFile" accept=".csv,text/csv">
+        </div>
+        <div class="col-md-3">
+          <button class="btn btn-primary w-100" id="btnUpload"><i class="fa-solid fa-upload me-1"></i>アップロードして解析</button>
+        </div>
+        <div class="col-md-3">
+          <button class="btn btn-outline-secondary w-100" id="btnSample"><i class="fa-solid fa-flask me-1"></i>サンプルデータで試す</button>
+        </div>
+      </div>
+      <div id="loadStatus" class="mt-3" role="status" aria-live="polite"></div>
+      <div id="dataSummary" class="mt-3 d-none">
+        <div class="row g-2" id="summaryCards"></div>
+        <div class="table-responsive mt-3">
+          <table class="table table-sm table-bordered" id="previewTable"></table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP 2: 手法選択 -->
+  <div class="card shadow-sm mb-4 d-none" id="analysisCard">
+    <div class="card-header card-header-step">
+      <span class="step-badge">STEP 2</span> 手法を選んで解析
+    </div>
+    <div class="card-body">
+      <ul class="nav nav-pills mb-4" id="methodTabs">
+        <li class="nav-item">
+          <button class="nav-link active" data-tab="cause"><i class="fa-solid fa-magnifying-glass-chart me-1"></i>① 原因予測</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-tab="pattern"><i class="fa-solid fa-shapes me-1"></i>② 未知パターン発見</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-tab="similar"><i class="fa-solid fa-copy me-1"></i>③ 類似Fault検索</button>
+        </li>
+      </ul>
+
+      <!-- ① 原因予測 -->
+      <div class="tab-pane" id="pane-cause">
+        <p class="text-muted small mb-3">新しいFaultの属性（一部でも可）を選択すると、埋め込み空間の近傍から原因候補を確率付きで推定します。表示される確率は近傍25件の類似度重み付き投票の構成比であり、統計的な事後確率ではありません。</p>
+        <div class="row g-3" id="causeAttrForm"></div>
+        <button class="btn btn-primary mt-3" id="btnPredictCause"><i class="fa-solid fa-bolt me-1"></i>原因を予測する</button>
+        <div id="causeResult" class="mt-4"></div>
+        <hr class="my-4">
+        <h6 class="cluster-title mb-2"><i class="fa-solid fa-clipboard-check me-1"></i>精度検証（ホールドアウト評価）</h6>
+        <p class="small-muted mb-2">学習/検証に分割し、多数決ベースライン・勾配ブースティング(CatBoost相当)と正解率を比較します。ベースラインを超えていなければ、このモデルは実用に値しません。</p>
+        <button class="btn btn-outline-primary btn-sm" id="btnEvaluate"><i class="fa-solid fa-flask-vial me-1"></i>精度を検証する</button>
+        <div id="evalResult" class="mt-3"></div>
+      </div>
+
+      <!-- ② 未知パターン発見 -->
+      <div class="tab-pane d-none" id="pane-pattern">
+        <p class="text-muted small mb-3">Fault埋め込みをクラスタリング・異常検知・コミュニティ検出し、潜在的な未知パターンを発見します。</p>
+        <div class="row g-3 align-items-end">
+          <div class="col-md-3">
+            <label class="form-label small text-muted" for="nClusters">クラスタ数（空欄で自動）</label>
+            <input type="number" min="2" max="30" class="form-control" id="nClusters" placeholder="自動">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small text-muted" for="contamination">異常検知の感度（0.005〜0.5）</label>
+            <input type="number" min="0.005" max="0.5" step="0.01" class="form-control" id="contamination" value="0.08">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small text-muted" for="recentDays">急増検知の直近期間(日)</label>
+            <input type="number" min="1" max="3650" class="form-control" id="recentDays" value="90">
+          </div>
+          <div class="col-md-3">
+            <button class="btn btn-primary w-100" id="btnDiscover"><i class="fa-solid fa-bolt me-1"></i>パターンを発見する</button>
+          </div>
+        </div>
+        <div id="patternResult" class="mt-4"></div>
+
+        <div id="networkSection" class="d-none">
+          <h6 class="cluster-title mb-2 mt-2"><i class="fa-solid fa-circle-nodes me-1"></i>共起ネットワーク（コミュニティ色分け）</h6>
+          <p class="small-muted mb-2">属性値どうしが同じFaultで一緒に出現した回数をエッジの太さとし、ノードの色はコミュニティ検出結果で色分けしています。ノードの大きさは出現頻度、ドラッグ・ホイールで移動と拡大縮小ができます。</p>
+          <div id="networkLegend" class="mb-2"></div>
+          <div id="networkGraph" style="height:520px;border:1px solid #e5e7f5;border-radius:12px;background:#fff;"></div>
+        </div>
+      </div>
+
+      <!-- ③ 類似Fault検索 -->
+      <div class="tab-pane d-none" id="pane-similar">
+        <p class="text-muted small mb-3">今回のFaultと似た過去事例を、原因・対策とともにランキング表示します。</p>
+        <div class="btn-group mb-3" role="group">
+          <input type="radio" class="btn-check" name="simMode" id="simModeExisting" checked>
+          <label class="btn btn-outline-secondary btn-sm" for="simModeExisting">既存FaultIDから検索</label>
+          <input type="radio" class="btn-check" name="simMode" id="simModeNew">
+          <label class="btn btn-outline-secondary btn-sm" for="simModeNew">新規属性から検索</label>
+        </div>
+
+        <div id="simExistingBlock" class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label small text-muted" for="simFaultId">Fault ID（入力すると絞り込みます）</label>
+            <input class="form-control" id="simFaultId" list="faultIdList" placeholder="F00000" autocomplete="off">
+            <datalist id="faultIdList"></datalist>
+            <div class="form-text" id="faultIdHint"></div>
+          </div>
+        </div>
+        <div id="simNewBlock" class="row g-3 d-none"></div>
+
+        <div class="row g-3 align-items-end mt-1">
+          <div class="col-md-3">
+            <label class="form-label small text-muted" for="simTopK">表示件数</label>
+            <input type="number" min="1" max="100" class="form-control" id="simTopK" value="10">
+          </div>
+          <div class="col-md-3">
+            <button class="btn btn-primary w-100" id="btnFindSimilar"><i class="fa-solid fa-bolt me-1"></i>類似Faultを検索する</button>
+          </div>
+        </div>
+        <div id="similarResult" class="mt-4"></div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.3/js/bootstrap.bundle.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

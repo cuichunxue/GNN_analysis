@@ -1,0 +1,132 @@
+:root {
+  --brand: #4f46e5;
+  --brand-dark: #3730a3;
+  --bg: #f4f5f9;
+}
+
+body {
+  background: var(--bg);
+  font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+}
+
+.app-navbar {
+  background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+}
+
+.card-header-step {
+  background: #fff;
+  font-weight: 600;
+  border-bottom: 2px solid #eef0fb;
+}
+
+.step-badge {
+  display: inline-block;
+  background: var(--brand);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 999px;
+  margin-right: 8px;
+  letter-spacing: 0.03em;
+}
+
+#methodTabs .nav-link {
+  color: #444;
+  border-radius: 999px;
+  padding: 0.5rem 1.1rem;
+  margin-right: 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border: 1px solid #e1e3ef;
+}
+
+#methodTabs .nav-link.active {
+  background: var(--brand);
+  color: #fff;
+  border-color: var(--brand);
+}
+
+.summary-chip {
+  background: #fff;
+  border: 1px solid #e5e7f5;
+  border-radius: 10px;
+  padding: 10px 16px;
+  min-width: 140px;
+}
+
+.summary-chip .val {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--brand-dark);
+}
+
+.summary-chip .lbl {
+  font-size: 0.72rem;
+  color: #888;
+}
+
+.result-card {
+  border: 1px solid #e5e7f5;
+  border-radius: 12px;
+  padding: 16px;
+  background: #fff;
+  margin-bottom: 14px;
+}
+
+.cause-bar-wrap {
+  background: #eef0fb;
+  border-radius: 6px;
+  height: 10px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.cause-bar {
+  background: linear-gradient(90deg, var(--brand), #818cf8);
+  height: 100%;
+}
+
+.badge-sim {
+  background: #eef2ff;
+  color: var(--brand-dark);
+  font-weight: 700;
+}
+
+.badge-anomaly {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.attr-tag {
+  display: inline-block;
+  background: #f1f2fb;
+  border-radius: 6px;
+  padding: 2px 8px;
+  margin: 2px 4px 2px 0;
+  font-size: 0.78rem;
+  color: #444;
+}
+
+.cluster-title {
+  font-weight: 700;
+  color: var(--brand-dark);
+}
+
+.small-muted {
+  font-size: 0.78rem;
+  color: #888;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+button:disabled {
+  opacity: 0.65;
+}
