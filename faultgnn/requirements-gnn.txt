@@ -1,0 +1,12 @@
+# オプション: PyTorch GeometricによるGNNモジュール（train_gnn.py）用の追加依存関係。
+# 通常のアプリ（app.py）には不要。requirements.txt / requirements-dev.txt の上に重ねて使う。
+#
+#   pip install -r requirements.txt -r requirements-gnn.txt
+#
+# GPU環境の場合は https://pytorch.org/get-started/locally/ の案内に従い、
+# CUDA版のtorchを別途インストールしてください（このファイルはCPU実行を前提にしています）。
+# CPU専用wheelの取得を優先したい場合は以下を追加してください（ネットワークポリシーにより
+# download.pytorch.org へ到達できない環境では通常のPyPIにフォールバックします）:
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2,<3
+torch_geometric>=2.5,<3

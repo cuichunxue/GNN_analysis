@@ -65,7 +65,7 @@ Fault × 属性値 の incidence 行列
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                      # 54件（エンジンの回帰テスト + HTTP APIのテスト）
+pytest                      # 54件（エンジンの回帰テスト + HTTP APIのテスト。GNNモジュール未導入でも実行可）
 python3 benchmark.py        # 1,000 / 5,000 / 20,000件 のスケール計測
 python3 benchmark.py 100000 # 件数指定
 ```
@@ -76,6 +76,58 @@ python3 benchmark.py 100000 # 件数指定
 |---|---|---|---|---|
 | 20,000 | 0.6秒 | 4.0秒 | 1.2秒 | 0.01秒未満 |
 | 100,000 | 2.1秒 | 7.2秒 | 1.4秒 | 0.01秒未満 |
+
+## GNNモジュール（オプション、PyTorch Geometric）
+
+Web アプリ本体（`app.py`）が使う手法は、学習される重みを持たない軽量な埋め込み手法です
+（下記「本番投入前に検討すべき点」参照）。それとは別に、**実際に学習する異種グラフGNN**を
+`torch` / `torch_geometric` で実装したスタンドアロン実験モジュールを同梱しています。
+**Flaskアプリの `/api/*` には統合していません**（あくまで比較・検証用のCLIスクリプトです）。
+
+```bash
+pip install -r requirements-gnn.txt   # torch / torch_geometric を追加インストール（CPU想定）
+python3 train_gnn.py --task both      # ノード分類・リンク予測の両方を学習・評価
+```
+
+### アーキテクチャ
+
+- `fault`（故障）と `attr_value`（属性値）の2種類のノードからなる二部グラフ（`HeteroData`）。
+  `attr_value` は `graph_engine.FaultAnalyzer.vocab` をそのまま使うため、**原因列は構造的に
+  含まれません**（本体アプリと同じくラベルリークを防止）。
+- `attr_value` ノードは学習可能な埋め込みテーブル、`fault` ノードは学習可能パラメータを
+  持たせずゼロベクトルから開始し、`SAGEConv` によるメッセージパッシング（2層）のみで
+  表現を獲得します。故障ごとの自由パラメータを持たせないのは、リンク予測の教師信号が
+  Fault-Faultペアであるため、そこに自由度を与えると「構造から学習」ではなく「ペアの丸暗記」に
+  なってしまうからです。
+- **① ノード分類（原因予測の代替）**: `fault` ノードの埋め込みから原因クラスを分類。
+  test集合は本体アプリの `evaluate_cause_model()` と**同一の分割**（`random_state=0`）にしてあり、
+  比較表に1行追加する形でそのまま横並び比較できます。
+- **② リンク予測（③類似Fault検索の代替）**: 属性値を`min_shared_attrs`個以上共有するFaultペアを
+  正例として学習します。**メッセージパッシングにはこの類似度エッジを一切使いません**
+  （構造的な分離は `tests/test_gnn.py::test_encoder_output_is_unaffected_by_similarity_edges` で保証）。
+
+### 実測値（同梱サンプルデータ、既定パラメータ、CPU）
+
+```
+model                                     top1    top3
+------------------------------------------------------
+多数決ベースライン                                0.298       -
+埋め込みkNN（本アプリ①）                           0.488   0.802
+勾配ブースティング（CatBoost相当）                    0.496   0.835
+GNN（PyTorch Geometric, GraphSAGE）        0.496   0.769
+------------------------------------------------------
+リンク予測: AUC-ROC 0.96 / Average Precision 0.96 / Precision@10 0.95
+実行時間: 約7秒（torchのインポート込み、学習自体は数秒）
+```
+
+Top-1は勾配ブースティングと同水準まで伸びましたが、Top-3は表形式モデルにわずかに劣ります。
+**この規模・この特徴量では表形式モデルを明確に上回るわけではない**という、既存の検証結果と
+整合する正直な結果です。リンク予測（類似Fault検索の代替）は良好な精度が出ていますが、
+これは「属性を多く共有するFaultほどリンクを引く」という定義そのものが学習しやすい構造の
+タスクであることに留意してください（実際に役立つ「類似」の定義かどうかは別途検証が必要です）。
+
+主な `train_gnn.py` オプション: `--task {node,link,both}` `--csv PATH`（省略時はサンプルデータ）
+`--epochs` `--hidden-dim` `--min-shared-attrs` `--link-decoder {dot,mlp}` `--seed`
 
 ## セキュリティ
 
@@ -110,18 +162,23 @@ faultgnn/
 ├── graph_engine.py        # 埋め込み・3手法のコアロジック
 ├── sample_data.py         # デモ用サンプルデータ生成
 ├── benchmark.py           # スケール計測
-├── requirements.txt / requirements-dev.txt
+├── gnn_data.py            # [オプション] GNN用グラフ構築・分割（PyTorch Geometric）
+├── gnn_model.py           # [オプション] 異種グラフGNN本体
+├── train_gnn.py           # [オプション] GNN学習・評価CLI（Flaskアプリには未統合）
+├── requirements.txt / requirements-dev.txt / requirements-gnn.txt
 ├── templates/index.html
 ├── static/{app.js, style.css}
-└── tests/{conftest.py, test_engine.py, test_api.py}
+└── tests/{conftest.py, test_engine.py, test_api.py, test_gnn.py}
 ```
 
 ## 本番投入前に検討すべき点
 
-1. **これはGNNではありません。** TF-IDF+SVD に1ホップの近傍平滑化を加えたもので、学習される重みがありません。
-   真のGNN（GraphSAGE/HGT等）が必要なら PyTorch Geometric を導入し、原因ラベルを教師信号として
-   end-to-end 学習してください。ただし下記のとおり、この規模・この特徴量では勾配ブースティングを
-   超えるのは容易ではありません。
+1. **Web アプリ本体（`app.py`）が使う手法は、真の意味でのGNNではありません。** TF-IDF+SVD に
+   1ホップの近傍平滑化を加えたもので、学習される重みを持ちません。実際に学習する異種グラフGNN
+   （GraphSAGEベース）を PyTorch Geometric で実装したスタンドアロンモジュールを
+   `train_gnn.py` として同梱しています（上記「GNNモジュール」参照）。ただし実測が示すとおり、
+   この規模・この特徴量では勾配ブースティングを明確に超えるわけではなく、Flaskアプリへの
+   統合は行っていません。
 2. **原因予測は表形式モデルに劣後します。** 同梱サンプルでの実測は
    多数決ベースライン Top-1 0.298 / 埋め込みkNN 0.488（Top-3 0.802）/ 勾配ブースティング 0.496（Top-3 0.835）。
    原因予測は表形式モデルを本番採用し、グラフ/埋め込みは②パターン発見・③類似検索に使うのが合理的です。
