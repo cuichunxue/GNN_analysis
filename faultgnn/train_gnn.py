@@ -58,26 +58,45 @@ def _init_encoder(num_attr_values, args):
     return enc
 
 
+def _resolve_device(args) -> torch.device:
+    """--device auto（既定）なら GPU(CUDA) があれば優先して使う。"""
+    want = getattr(args, "device", "auto")
+    if want == "cpu":
+        return torch.device("cpu")
+    if want == "cuda":
+        if not torch.cuda.is_available():
+            raise SystemExit("GPU(CUDA)が利用できません。--device cpu を指定するか、GPU環境で実行してください。")
+        return torch.device("cuda")
+    return torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+
+def _seed_everything(seed: int, device: torch.device):
+    torch.manual_seed(seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+
+
 # ----------------------------------------------------------------------
 # ① ノード分類（原因予測）
 # ----------------------------------------------------------------------
 def run_node_classification(analyzer: FaultAnalyzer, args) -> dict:
-    torch.manual_seed(args.seed)
+    device = _resolve_device(args)
+    _seed_everything(args.seed, device)
     if not analyzer.cause_column:
         raise ValueError("原因列がないためノード分類は実行できません")
 
-    data = build_bipartite_hetero_data(analyzer)
+    data = build_bipartite_hetero_data(analyzer).to(device)
     train_idx, val_idx, test_idx, y_full, classes = split_cause_labels(
         analyzer, val_size=args.val_size, random_state=args.seed
     )
-    train_idx = torch.as_tensor(train_idx, dtype=torch.long)
-    val_idx = torch.as_tensor(val_idx, dtype=torch.long)
-    test_idx = torch.as_tensor(test_idx, dtype=torch.long)
-    y = torch.as_tensor(y_full, dtype=torch.long)
+    train_idx = torch.as_tensor(train_idx, dtype=torch.long, device=device)
+    val_idx = torch.as_tensor(val_idx, dtype=torch.long, device=device)
+    test_idx = torch.as_tensor(test_idx, dtype=torch.long, device=device)
+    y = torch.as_tensor(y_full, dtype=torch.long, device=device)
 
-    encoder = _init_encoder(len(analyzer.vocab), args)
-    head = CausePredictionHead(args.hidden_dim, len(classes))
-    with torch.no_grad():  # lazy SAGEConv パラメータを最適化器構築前に確定させる
+    encoder = _init_encoder(len(analyzer.vocab), args).to(device)
+    head = CausePredictionHead(args.hidden_dim, len(classes)).to(device)
+    with torch.no_grad():  # lazy SAGEConv パラメータを最適化器構築前に確定させる（data と同じ device で materialize される）
         encoder(data)
     params = list(encoder.parameters()) + list(head.parameters())
     opt = torch.optim.Adam(params, lr=args.lr, weight_decay=args.weight_decay)
@@ -128,6 +147,7 @@ def run_node_classification(analyzer: FaultAnalyzer, args) -> dict:
         "n_val": int(len(val_idx)),
         "n_test": int(len(test_idx)),
         "epochs_run": epoch + 1,
+        "device": str(device),
     }
 
 
@@ -135,12 +155,14 @@ def run_node_classification(analyzer: FaultAnalyzer, args) -> dict:
 # ② リンク予測（③類似Fault検索の代替）
 # ----------------------------------------------------------------------
 def run_link_prediction(analyzer: FaultAnalyzer, args) -> dict:
-    torch.manual_seed(args.seed)
+    device = _resolve_device(args)
+    _seed_everything(args.seed, device)
     np.random.seed(args.seed)
 
     data = build_bipartite_hetero_data(analyzer)
     data, diag = attach_fault_similarity_edges(data, analyzer, min_shared_attrs=args.min_shared_attrs)
 
+    # 分割は CPU 上で行い（PyG推奨）、分割後にまとめて device へ転送する
     splitter = RandomLinkSplit(
         num_val=0.1,
         num_test=0.2,
@@ -150,10 +172,14 @@ def run_link_prediction(analyzer: FaultAnalyzer, args) -> dict:
         edge_types=[SIMILAR_TO],
     )
     train_data, val_data, test_data = splitter(data)
+    data = data.to(device)
+    train_data = train_data.to(device)
+    val_data = val_data.to(device)
+    test_data = test_data.to(device)
     n_fault = data[FAULT].num_nodes
 
-    encoder = _init_encoder(len(analyzer.vocab), args)
-    head = LinkPredictionHead(args.hidden_dim, mode=args.link_decoder)
+    encoder = _init_encoder(len(analyzer.vocab), args).to(device)
+    head = LinkPredictionHead(args.hidden_dim, mode=args.link_decoder).to(device)
     with torch.no_grad():
         encoder(train_data)
     params = list(encoder.parameters()) + list(head.parameters())
@@ -165,8 +191,8 @@ def run_link_prediction(analyzer: FaultAnalyzer, args) -> dict:
         with torch.no_grad():
             fault_emb = encoder(split_data)[FAULT]
             logits = head(fault_emb, split_data[SIMILAR_TO].edge_label_index)
-            probs = torch.sigmoid(logits).numpy()
-            labels = split_data[SIMILAR_TO].edge_label.numpy()
+            probs = torch.sigmoid(logits).cpu().numpy()
+            labels = split_data[SIMILAR_TO].edge_label.cpu().numpy()
         auc = roc_auc_score(labels, probs) if len(set(labels)) > 1 else float("nan")
         ap = average_precision_score(labels, probs) if len(set(labels)) > 1 else float("nan")
         return auc, ap
@@ -184,7 +210,10 @@ def run_link_prediction(analyzer: FaultAnalyzer, args) -> dict:
         )
         edge_label_index = torch.cat([pos_train_index, neg_index], dim=1)
         edge_label = torch.cat(
-            [torch.ones(pos_train_index.size(1)), torch.zeros(neg_index.size(1))]
+            [
+                torch.ones(pos_train_index.size(1), device=device),
+                torch.zeros(neg_index.size(1), device=device),
+            ]
         )
         logits = head(fault_emb, edge_label_index)
         loss = F.binary_cross_entropy_with_logits(logits, edge_label)
@@ -218,9 +247,9 @@ def run_link_prediction(analyzer: FaultAnalyzer, args) -> dict:
         sims = fault_emb @ fault_emb.T
         sims.fill_diagonal_(-float("inf"))
         k = min(args.precision_k, n_fault - 1)
-        topk = sims.argsort(dim=1, descending=True)[:, :k]
+        topk = sims.argsort(dim=1, descending=True)[:, :k].cpu()
 
-    pos_pairs = set(map(tuple, data[SIMILAR_TO].edge_index.t().tolist()))
+    pos_pairs = set(map(tuple, data[SIMILAR_TO].edge_index.cpu().t().tolist()))
     hits = sum(1 for f in range(n_fault) for c in topk[f].tolist() if (f, c) in pos_pairs)
     precision_at_k = hits / (n_fault * k) if n_fault and k else 0.0
 
@@ -233,6 +262,7 @@ def run_link_prediction(analyzer: FaultAnalyzer, args) -> dict:
         "n_val_edges": int(val_data[SIMILAR_TO].edge_label_index.size(1) // 2),
         "n_test_edges": int(test_data[SIMILAR_TO].edge_label_index.size(1) // 2),
         "epochs_run": epoch + 1,
+        "device": str(device),
         **diag,
     }
 
@@ -287,13 +317,21 @@ def build_arg_parser():
     p.add_argument("--link-decoder", choices=["dot", "mlp"], default="dot")
     p.add_argument("--precision-k", type=int, default=10)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="auto（既定）はGPU(CUDA)が使えれば優先して使う。cpu/cudaで明示指定も可能。",
+    )
     return p
 
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
     analyzer = _load_analyzer(args)
+    device = _resolve_device(args)
     print(f"データ: {len(analyzer.df)}件 / 属性列 {analyzer.attr_columns} / 属性値 {len(analyzer.vocab)}種")
+    print(f"device: {device}" + ("（GPU利用可）" if device.type == "cuda" else "（CPU実行。GPUは検出されませんでした）"))
 
     if args.task in ("node", "both"):
         _print_node_result(analyzer, run_node_classification(analyzer, args))

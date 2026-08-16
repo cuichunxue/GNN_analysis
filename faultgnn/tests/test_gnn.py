@@ -23,7 +23,7 @@ from gnn_data import (  # noqa: E402
     split_cause_labels,
 )
 from gnn_model import HeteroGNNEncoder  # noqa: E402
-from train_gnn import run_link_prediction, run_node_classification  # noqa: E402
+from train_gnn import _resolve_device, run_link_prediction, run_node_classification  # noqa: E402
 
 
 def make_args(**overrides):
@@ -41,9 +41,34 @@ def make_args(**overrides):
         link_decoder="dot",
         precision_k=10,
         seed=0,
+        # テストは常にCPUに固定する（GPU搭載機で実行した場合のCUDA非決定性によるflakyさを防ぐため）。
+        # GPU優先ロジック自体は test_device_prefers_cuda_when_available で別途検証する。
+        device="cpu",
     )
     defaults.update(overrides)
     return Namespace(**defaults)
+
+
+# ----------------------------------------------------------------- device解決
+def test_device_auto_prefers_cuda_when_available(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert _resolve_device(make_args(device="auto")).type == "cuda"
+
+
+def test_device_auto_falls_back_to_cpu_when_no_gpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert _resolve_device(make_args(device="auto")).type == "cpu"
+
+
+def test_device_explicit_cpu_ignores_gpu_availability(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert _resolve_device(make_args(device="cpu")).type == "cpu"
+
+
+def test_device_explicit_cuda_raises_when_unavailable(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(SystemExit):
+        _resolve_device(make_args(device="cuda"))
 
 
 # ----------------------------------------------------------------- グラフ構築

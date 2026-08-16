@@ -128,6 +128,9 @@ Top-1は勾配ブースティングと同水準まで伸びましたが、Top-3�
 
 主な `train_gnn.py` オプション: `--task {node,link,both}` `--csv PATH`（省略時はサンプルデータ）
 `--epochs` `--hidden-dim` `--min-shared-attrs` `--link-decoder {dot,mlp}` `--seed`
+`--device {auto,cpu,cuda}`（既定は `auto`。**GPU(CUDA)が使える環境では自動的に優先して使用**します。
+`pip install torch` は既定でCUDA対応wheelが入るため、追加設定なしでGPUを検出・利用できます。
+明示的にCPUで実行したい場合は `--device cpu` を指定してください）
 
 ## セキュリティ
 

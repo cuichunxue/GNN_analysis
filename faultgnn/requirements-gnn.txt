@@ -3,10 +3,13 @@
 #
 #   pip install -r requirements.txt -r requirements-gnn.txt
 #
-# GPU環境の場合は https://pytorch.org/get-started/locally/ の案内に従い、
-# CUDA版のtorchを別途インストールしてください（このファイルはCPU実行を前提にしています）。
-# CPU専用wheelの取得を優先したい場合は以下を追加してください（ネットワークポリシーにより
-# download.pytorch.org へ到達できない環境では通常のPyPIにフォールバックします）:
+# 素の `pip install torch` は既定でCUDA対応wheelが入るため、GPU(CUDA)環境ではこのまま
+# インストールするだけで train_gnn.py が --device auto（既定）でGPUを自動検出・優先使用します。
+# 追加設定は不要です。
+#
+# CPU専用wheelでディスク使用量・ダウンロード量を抑えたい場合は以下を追加してください
+# （ネットワークポリシーにより download.pytorch.org へ到達できない環境では通常のPyPIに
+# フォールバックし、この場合もCUDA同梱wheelがインストールされますが動作に支障はありません）:
 #   --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.2,<3
 torch_geometric>=2.5,<3
